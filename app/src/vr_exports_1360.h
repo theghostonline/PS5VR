@@ -24,6 +24,7 @@ static const export_sig_t klibSceHmd2Exports[] = {
   {"sceHmd2InternalImageOpenBySlot", 0x30120},
   {"sceHmd2InternalLedDetectorOpenBySlot", 0x2f740},
   {"sceHmd2GazeGetResult", 0x35510},
+  {"sceHmd2SetVibration", 0x2ae00},
   {"sceHmd2InternalGazeStart", 0x31b60},
   {"sceHmd2InternalGazeStop", 0x31b80},
 };

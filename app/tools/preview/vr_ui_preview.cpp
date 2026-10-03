@@ -27,6 +27,12 @@ void app_vr_recenter(void) {}
 void eng_vr_audio_set_enabled(int) {}
 void app_vr_head_pose(float pos[3], float q[4]) { pos[0] = pos[1] = pos[2] = 0; q[0] = q[1] = q[2] = 0; q[3] = 1; }
 void vr_hands_request(int) {}
+int app_vr_controller(int, float *, float *, uint32_t *, float *) { return 0; }
+void app_vr_to_view(const float p[3], float o[3]) { o[0] = p[0]; o[1] = p[1]; o[2] = p[2]; }
+void app_vr_vibrate(int) {}
+int app_vr_worn(void) { return 1; }
+void eng_agc_vr_overlay_clear(void) {}
+void eng_agc_vr_overlay_quad(const float (*)[3], const uint32_t *) {}
 void eng_agc_vr_set_framegen(int) {}
 int app_vr_restart(void) { return 0; }
 int app_vr_gaze_dir(float d[3]) { (void)d; return 0; }
@@ -59,12 +65,13 @@ bool vr_src_list(const VrSrc &where, std::vector<VrSrc> &out, std::string &)
     return true;
 }
 bool vr_src_resolve(const VrSrc &, VrSrc &, std::string &) { return false; }
-bool vr_prefs_hands(void) { return false; }
+int vr_prefs_control(void) { return 0; }
+const char *vr_control_name(int) { return "Off"; }
 bool vr_prefs_hdr(void) { return false; }
 bool vr_prefs_mirror(void) { return false; }
 void vr_prefs_set_mirror(bool) {}
 void vr_prefs_set_hdr(bool) {}
-void vr_prefs_set_hands(bool) {}
+void vr_prefs_set_control(int) {}
 
 static void save(const ui_canvas &c, const std::string &path)
 {

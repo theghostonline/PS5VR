@@ -39,8 +39,11 @@ bool vr_src_list(const VrSrc &where, std::vector<VrSrc> &out, std::string &err);
 bool vr_src_resolve(const VrSrc &video, VrSrc &play, std::string &err);
 
 /* Hands & eyes control (experimental), kept in /data/ps5vr/prefs.json. */
-bool vr_prefs_hands(void);
-void vr_prefs_set_hands(bool on);
+/* Hands & eyes control (experimental): 0 off, 1 hands (ray + pinch),
+ * 2 eyes + pinch, 3 eyes + blink (no hands needed). Controllers always work. */
+int  vr_prefs_control(void);
+void vr_prefs_set_control(int mode);
+const char *vr_control_name(int mode);
 /* HDR in the headset (experimental): RGBA16F eye buffers. */
 bool vr_prefs_hdr(void);
 void vr_prefs_set_hdr(bool on);

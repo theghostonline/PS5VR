@@ -53,8 +53,14 @@ PS VR2 compositor, at 120 Hz.
 **In the headset**
 - A library and a View menu drawn in VR, driven by the DualSense
 - Recentre (R3), auto-pause when the headset comes off, TV mirroring
-- Hands & eyes (experimental): look at an item and pinch to select, pinch
-  for playback controls, hold a pinch for the View menu
+- PS VR2 Sense controllers: tracked controllers in the headset with a laser
+  pointer for the panels (trigger to select, drag to scroll, circle for back)
+- Hands & eyes (experimental), four modes:
+  - Hands: point with your hand, pinch to select, with your hands drawn in VR
+  - Eyes + pinch: look at an item and pinch with either hand
+  - Eyes + blink: look at an item, close your eyes until the headset buzzes,
+    then open them to select - no hands needed
+  - A quick pinch shows the playback controls, a held pinch the View menu
 
 ---
 

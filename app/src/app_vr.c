@@ -52,6 +52,7 @@ typedef struct { uint64_t size, align; } SizeAlign;
     X(int, sceHmd2InternalImageOpenBySlot, (int slot))                                     \
     X(int, sceHmd2InternalLedDetectorOpenBySlot, (int slot))                               \
     X(int, sceHmd2GazeGetResult, (const void *param, void *result))                        \
+    X(int, sceHmd2SetVibration, (int handle, int strength))                        \
     X(int, sceHmd2InternalGazeStart, (void))                                               \
     X(int, sceHmd2InternalGazeStop, (void))
 #define VRTRACKER2_FUNCS(X)                                                                  \
@@ -319,10 +320,120 @@ void app_vr_head_quat(float q[4])
     memcpy(q, g.qd, sizeof g.qd);
 }
 
+static void qmul(const float a[4], const float b[4], float o[4]);
+
+/* -- the PS VR2 Sense controllers ------------------------------------------- */
+/* As Horizon opens them: scePadOpen(user, 3 = left / 4 = right, 0, NULL), each
+ * registered with the tracker: device 2 takes pad type 3, device 1 type 4
+ * (its handle check; 0 is the headset). The pose
+ * comes from VrTracker2GetResult with the pad handle; buttons from
+ * scePadVrControllerReadState (0x68 bytes: +0 buttons, +4 stick x/y bytes,
+ * +0x40 connected). */
+int scePadOpen(int user, int type, int index, const void *param);
+int scePadVrControllerReadState(int handle, void *state);
+
+static struct {
+    int handle[2];
+    int registered[2];
+    int opened;
+    uint32_t buttons[2], last_logged[2];
+    int connected[2];
+} s_ctl = {{-1, -1}, {0, 0}, 0, {0, 0}, {0, 0}, {0, 0}};
+
+static void controllers_open(void)
+{
+    if (s_ctl.opened || !g.loaded)
+        return;
+    s_ctl.opened = 1;
+    for (int side = 0; side < 2; side++) {
+        s_ctl.handle[side] = scePadOpen(g.user, side ? 4 : 3, 0, NULL);
+        const int rc = s_ctl.handle[side] >= 0
+                           ? sceVrTracker2RegisterDevice(side ? 1 : 2, s_ctl.handle[side]) : -1;
+        s_ctl.registered[side] = rc == 0;
+        eng_bt("vr: %s controller pad 0x%x, tracker register 0x%08x", side ? "right" : "left",
+               s_ctl.handle[side], rc);
+    }
+}
+
+/* The controller's pose, head-relative, in the space panels are drawn in:
+ * position (m) and orientation. 1 when tracked. */
+int app_vr_controller(int side, float pos[3], float q[4], uint32_t *buttons, float stick[2])
+{
+    if (side < 0 || side > 1 || !g.active)
+        return 0;
+    controllers_open();
+    if (!s_ctl.registered[side])
+        return 0;
+    uint8_t st[0x68];
+    memset(st, 0, sizeof st);
+    s_ctl.connected[side] = scePadVrControllerReadState(s_ctl.handle[side], st) == 0 && st[0x40];
+    s_ctl.buttons[side] = *(uint32_t *)st;
+    if (buttons)
+        *buttons = s_ctl.buttons[side];
+    if (stick) {
+        stick[0] = (st[4] - 128) / 127.0f;
+        stick[1] = (st[5] - 128) / 127.0f;
+    }
+    static uint8_t res[0x400];
+    uint8_t gp[0x20];
+    memset(gp, 0, sizeof gp);
+    *(uint32_t *)(gp + 0x00) = 0x20;
+    *(int32_t *)(gp + 0x04) = s_ctl.handle[side];
+    *(uint64_t *)(gp + 0x10) = g.t;
+    memset(res, 0, sizeof res);
+    const int rc = sceVrTracker2GetResult(gp, res);
+    /* (logged while the layout is being confirmed) */
+    static uint64_t s_next[2];
+    const uint64_t now = sceKernelGetProcessTime();
+    if (now >= s_next[side] || s_ctl.buttons[side] != s_ctl.last_logged[side]) {
+        s_next[side] = now + 3000000;
+        s_ctl.last_logged[side] = s_ctl.buttons[side];
+        const uint32_t *w = (const uint32_t *)res;
+        const float *f = (const float *)(res + 0x60);
+        eng_bt("vr: ctl %d rc 0x%08x conn %d btn %08x stick %02x%02x %02x%02x | %08x %08x | %.3f %.3f %.3f q %.3f %.3f %.3f %.3f",
+               side, rc, s_ctl.connected[side], s_ctl.buttons[side], st[4], st[5], st[6], st[7],
+               w[0], w[1], (double)f[0], (double)f[1], (double)f[2], (double)f[4], (double)f[5],
+               (double)f[6], (double)f[7]);
+    }
+    if (rc != 0 || !*(uint32_t *)(res + 4))
+        return 0;
+    float p[3], dq[4], t[3];
+    memcpy(p, res + 0x60, 12);
+    memcpy(dq, res + 0x70, 16);
+    for (int k = 0; k < 3; k++)
+        t[k] = p[k] - g.pd[k];
+    /* into picture space: yaw_q rotation of the offset and the orientation */
+    const float x = g.yaw_q[0], y = g.yaw_q[1], z = g.yaw_q[2], w = g.yaw_q[3];
+    const float tx = 2 * (y * t[2] - z * t[1]), ty = 2 * (z * t[0] - x * t[2]), tz = 2 * (x * t[1] - y * t[0]);
+    pos[0] = t[0] + w * tx + (y * tz - z * ty);
+    pos[1] = t[1] + w * ty + (z * tx - x * tz);
+    pos[2] = t[2] + w * tz + (x * ty - y * tx);
+    qmul(g.yaw_q, dq, q);
+    return 1;
+}
+
 void app_vr_head_pose(float pos[3], float yaw_q[4])
 {
     memcpy(pos, g.pd, sizeof g.pd);
     memcpy(yaw_q, g.yaw_q, sizeof g.yaw_q);
+}
+
+/* A tracker-space point (hand joints) into the head-relative picture space. */
+void app_vr_to_view(const float p[3], float out[3])
+{
+    const float t[3] = {p[0] - g.pd[0], p[1] - g.pd[1], p[2] - g.pd[2]};
+    const float x = g.yaw_q[0], y = g.yaw_q[1], z = g.yaw_q[2], w = g.yaw_q[3];
+    const float tx = 2 * (y * t[2] - z * t[1]), ty = 2 * (z * t[0] - x * t[2]), tz = 2 * (x * t[1] - y * t[0]);
+    out[0] = t[0] + w * tx + (y * tz - z * ty);
+    out[1] = t[1] + w * ty + (z * tx - x * tz);
+    out[2] = t[2] + w * tz + (x * ty - y * tx);
+}
+
+/* The headset's rumble, 0 (off) to 25. */
+void app_vr_vibrate(int strength)
+{
+    if (g.loaded && sceHmd2SetVibration)
+        sceHmd2SetVibration(g.hmd, strength < 0 ? 0 : strength > 25 ? 25 : strength);
 }
 
 /* Load address of libSceVrTracker2 (from a bound export), 0 if not bound. */
@@ -863,8 +974,11 @@ uint64_t app_vr_frame_time(void) { return 0; }
 void app_vr_camera_probe(void) {}
 uintptr_t app_vr_tracker_base(void) { return 0; }
 int app_vr_gaze(void *result) { (void)result; return -1; }
+void app_vr_to_view(const float p[3], float out[3]) { out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; }
+void app_vr_vibrate(int strength) { (void)strength; }
 int app_vr_gaze_dir(float dir[3]) { (void)dir; return 0; }
 void app_vr_head_quat(float q[4]) { q[0] = q[1] = q[2] = 0; q[3] = 1; }
+int app_vr_controller(int side, float pos[3], float q[4], uint32_t *buttons, float stick[2]) { (void)side; (void)pos; (void)q; (void)buttons; (void)stick; return 0; }
 void app_vr_head_pose(float pos[3], float yaw_q[4]) { pos[0] = pos[1] = pos[2] = 0; yaw_q[0] = yaw_q[1] = yaw_q[2] = 0; yaw_q[3] = 1; }
 int app_vr_port(void) { return -1; }
 int app_vr_worn(void) { return 1; }

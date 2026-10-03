@@ -64,6 +64,13 @@ uintptr_t app_vr_tracker_base(void);
 /* The head position in tracker space (metres) and the rotation from tracker
  * space to the space the picture and panels are drawn in. */
 void app_vr_head_pose(float pos[3], float yaw_q[4]);
+/* A Sense controller (0 left, 1 right): head-relative position (m) and
+ * orientation in picture space, its buttons and stick. 1 when tracked. */
+int app_vr_controller(int side, float pos[3], float q[4], uint32_t *buttons, float stick[2]);
+/* A tracker-space point (a hand joint) into head-relative picture space. */
+void app_vr_to_view(const float p[3], float out[3]);
+/* The headset's rumble, 0 (off) to 25. */
+void app_vr_vibrate(int strength);
 /* The head orientation in tracker space. */
 void app_vr_head_quat(float q[4]);
 /* Eye tracking: Hmd2's gaze result (0x38 bytes); its return code. */

@@ -306,7 +306,7 @@ int main()
     library.open();
     VrHandPointer hand;
     bool hands_asked = false;
-    vr_settings().hand_tracking = vr_prefs_hands();
+    vr_settings().control = vr_prefs_control();
     vr_settings().tv_mirror = vr_prefs_mirror();
     app_vr_set_mirror(vr_settings().tv_mirror);        /* applied when the session starts */
     if (vr_prefs_hdr()) {                           /* HDR (experimental): float eye buffers */
@@ -335,12 +335,17 @@ int main()
             app_input_state in;
             app_input_poll(&in);
             /* hands: hand tracking runs with the headset when the setting is on */
-            if (app_vr_active() && vr_settings().hand_tracking && !hands_asked) {
+            if (app_vr_active() && vr_settings().hands_needed() && !hands_asked) {
                 vr_hands_request(1);
                 hands_asked = true;
             }
             hand.update(app_vr_active() && place.shown ? &place : nullptr, 2.2f, 2.2f,
                         (float)VR_UI_H / (float)VR_UI_W);
+            /* Sense controller buttons act like the DualSense's */
+            in.pressed |= hand.buttons_pressed &
+                          (APP_BTN_CIRCLE | APP_BTN_TRIANGLE | APP_BTN_OPTIONS | APP_BTN_R3 | APP_BTN_L3);
+            if (in.pressed & APP_BTN_L3)
+                in.pressed |= APP_BTN_R3;
             library.point(hand, in);
             eng_agc_vr_panel_cursor(hand.valid && !hand.gaze, hand.u, hand.v, hand.pinching);
             if (in.pressed & APP_BTN_R3) {

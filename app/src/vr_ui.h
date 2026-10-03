@@ -9,6 +9,7 @@
 #include "ui_canvas.h"
 #include "vr_sources.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -31,20 +32,24 @@ struct VrPanelPlace {
  * the shoulder through the wrist and palm) when the eyes are not tracked. */
 struct VrHandPointer {
     bool valid = false;               /* something points at the panel */
-    bool gaze = false;                /* ... the eyes (else a hand) */
+    bool gaze = false;                /* ... the eyes */
+    bool laser = false;               /* ... a controller (else a hand ray) */
     float u = 0, v = 0;               /* where, 0..1 across and down (smoothed) */
-    bool pinching = false;            /* a pinch is held */
+    bool pinching = false;            /* a pinch (or trigger) is held */
     bool pressed = false;             /* it started this frame ... */
     bool released = false;            /* ... ended this frame */
-    float press_u = 0, press_v = 0;   /* where it pointed just before the pinch */
-    float drag = 0;                   /* how far the pinch moved since, in panel heights (down +) */
+    float press_u = 0, press_v = 0;   /* where it pointed just before the press */
+    float drag = 0;                   /* how far the press moved since, in panel heights (down +) */
     bool tapped = false;              /* a short pinch with no panel under it */
     bool held_long = false;           /* a pinch was held 0.8 s (once per pinch) */
+    uint32_t buttons_pressed = 0;     /* controller buttons that went down (pad bits) */
     /* Once per frame. panel = the panel's place, distance and width (metres);
-     * aspect = height / width. With no panel shown only the pinches count. */
+     * aspect = height / width. With no panel shown only the pinches count.
+     * Also draws the controllers, their lasers and the tracked hands. */
     void update(const VrPanelPlace *panel, float dist, float width, float aspect);
 
 private:
+    void smooth(float ru, float rv, bool eyes);
     bool m_pinch[2] = {false, false};
     int m_active = -1;                /* the hand that pinched last */
     float m_pinch_y0 = 0;             /* its pinch height when it began (metres) */
@@ -57,6 +62,17 @@ private:
     float m_fu = 0, m_fv = 0, m_du = 0, m_dv = 0;
     float m_hist_u[8] = {}, m_hist_v[8] = {};
     int m_hist_n = 0;
+    /* controllers */
+    uint32_t m_btn[2] = {0, 0};
+    bool m_trigger[2] = {false, false};
+    int m_laser_side = -1;
+    float m_press_v_ctl = 0;
+    /* blink to confirm */
+    int m_closed_frames = 0;          /* eyes closed (gaze lost while worn) */
+    bool m_blink_armed = false;       /* closed long enough: opening confirms */
+    int m_buzz_frames = 0;
+    float m_open_u = 0, m_open_v = 0; /* where the eyes rested before closing */
+    int m_flash = 0;
 };
 
 class VrLibrary {
@@ -141,7 +157,8 @@ struct VrSettings {
     bool spatial_audio = true;
     bool smooth_motion = true;        /* frame generation for 30 fps pictures */
     bool tv_mirror = false;
-    bool hand_tracking = false;       /* hands & eyes (experimental), from prefs.json */
+    int control = 0;                  /* hands & eyes: 0 off, 1 hands, 2 eyes + pinch, 3 eyes + blink */
+    bool hands_needed() const { return control == 1 || control == 2; }
 };
 VrSettings &vr_settings();
 /* The format of the playing video as detected, before the viewer's overrides. */

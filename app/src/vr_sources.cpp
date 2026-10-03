@@ -649,7 +649,7 @@ static bool mounted(const char *path)
 
 /* Choices made in the headset, kept in /data/ps5vr/prefs.json. */
 #define PS5VR_PREFS PS5VR_DIR "/prefs.json"
-static int s_prefs_loaded, s_prefs_hands, s_prefs_hdr, s_prefs_mirror;
+static int s_prefs_loaded, s_prefs_control, s_prefs_hdr, s_prefs_mirror;
 
 static void prefs_load(void)
 {
@@ -661,7 +661,13 @@ static void prefs_load(void)
         std::fread(b, 1, sizeof b - 1, f);
         std::fclose(f);
         if (cJSON *j = cJSON_Parse(b)) {
-            s_prefs_hands = cJSON_IsTrue(cJSON_GetObjectItem(j, "handsEyes"));
+            /* control: 0 off, 1 hands, 2 eyes + pinch, 3 eyes + blink (1.1.0 had handsEyes) */
+            if (cJSON *c = cJSON_GetObjectItem(j, "control"))
+                s_prefs_control = (int)cJSON_GetNumberValue(c);
+            else
+                s_prefs_control = cJSON_IsTrue(cJSON_GetObjectItem(j, "handsEyes")) ? 2 : 0;
+            if (s_prefs_control < 0 || s_prefs_control > 3)
+                s_prefs_control = 0;
             s_prefs_hdr = cJSON_IsTrue(cJSON_GetObjectItem(j, "hdr"));
             s_prefs_mirror = cJSON_IsTrue(cJSON_GetObjectItem(j, "mirror"));
             cJSON_Delete(j);
@@ -673,14 +679,19 @@ static void prefs_save(void)
 {
     mkdir(PS5VR_DIR, 0777);
     if (FILE *f = std::fopen(PS5VR_PREFS, "wb")) {
-        std::fprintf(f, "{\"handsEyes\":%s,\"hdr\":%s,\"mirror\":%s}\n", s_prefs_hands ? "true" : "false",
+        std::fprintf(f, "{\"control\":%d,\"hdr\":%s,\"mirror\":%s}\n", s_prefs_control,
                      s_prefs_hdr ? "true" : "false", s_prefs_mirror ? "true" : "false");
         std::fclose(f);
     }
 }
 
-bool vr_prefs_hands(void) { prefs_load(); return s_prefs_hands; }
-void vr_prefs_set_hands(bool on) { prefs_load(); s_prefs_hands = on; prefs_save(); }
+int vr_prefs_control(void) { prefs_load(); return s_prefs_control; }
+void vr_prefs_set_control(int mode) { prefs_load(); s_prefs_control = mode; prefs_save(); }
+const char *vr_control_name(int mode)
+{
+    static const char *const k[] = {"Off", "Hands", "Eyes + pinch", "Eyes + blink"};
+    return k[mode >= 0 && mode < 4 ? mode : 0];
+}
 bool vr_prefs_hdr(void) { prefs_load(); return s_prefs_hdr; }
 void vr_prefs_set_hdr(bool on) { prefs_load(); s_prefs_hdr = on; prefs_save(); }
 bool vr_prefs_mirror(void) { prefs_load(); return s_prefs_mirror; }
@@ -723,7 +734,7 @@ bool vr_src_list(const VrSrc &where, std::vector<VrSrc> &out, std::string &err)
             add(SRC_SITE, s.first, s.second, heresphere_url(s.second) ? "HereSphere" : "DeoVR");
         const std::string ip = vr_console_ip();
         add(SRC_MIRROR, "Mirror to TV", "", vr_prefs_mirror() ? "On" : "Off");
-        add(SRC_HANDS, "Hands & eyes (experimental)", "", vr_prefs_hands() ? "On" : "Off");
+        add(SRC_HANDS, "Hands & eyes (experimental)", "", vr_control_name(vr_prefs_control()));
         add(SRC_INFO, "Settings", "", "http://" + ip + ":" +
                                        std::to_string(vr_settings_server_port()));
         add(SRC_INFO, "Support PS5VR", "", "buymeacoffee.com/theghostonline");

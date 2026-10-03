@@ -110,28 +110,234 @@ bool panel_hit(const VrPanelPlace *panel, float dist, float width, float aspect,
 }
 } // namespace
 
+namespace {
+/* (overlay colours are premultiplied, 0xAABBGGRR) */
+uint32_t ov_rgba(int r, int g, int b, int a)
+{
+    return ((uint32_t)a << 24) | ((uint32_t)(b * a / 255) << 16) | ((uint32_t)(g * a / 255) << 8) |
+           (uint32_t)(r * a / 255);
+}
+
+void cross3(const float a[3], const float b[3], float o[3])
+{
+    o[0] = a[1] * b[2] - a[2] * b[1];
+    o[1] = a[2] * b[0] - a[0] * b[2];
+    o[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+void norm3(float v[3])
+{
+    const float l = sqrtf(dot3(v, v));
+    if (l > 1e-6f)
+        for (int k = 0; k < 3; k++)
+            v[k] /= l;
+}
+
+/* A ribbon from a to b, width w, turned to face the head (at the origin). */
+void ov_ribbon(const float a[3], const float b[3], float w, uint32_t ca, uint32_t cb)
+{
+    float d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, m[3], side[3];
+    for (int k = 0; k < 3; k++)
+        m[k] = 0.5f * (a[k] + b[k]);
+    cross3(d, m, side);
+    norm3(side);
+    float p[4][3];
+    for (int k = 0; k < 3; k++) {
+        p[0][k] = a[k] - side[k] * w * 0.5f;
+        p[1][k] = a[k] + side[k] * w * 0.5f;
+        p[2][k] = b[k] + side[k] * w * 0.5f;
+        p[3][k] = b[k] - side[k] * w * 0.5f;
+    }
+    const uint32_t c[4] = {ca, ca, cb, cb};
+    eng_agc_vr_overlay_quad(p, c);
+}
+
+/* A small square at p facing the head. */
+void ov_dot(const float p[3], float r, uint32_t col)
+{
+    const float up0[3] = {0, 1, 0};
+    float right[3], up[3], f[3] = {p[0], p[1], p[2]};
+    norm3(f);
+    cross3(up0, f, right);
+    norm3(right);
+    cross3(f, right, up);
+    float q[4][3];
+    for (int k = 0; k < 3; k++) {
+        q[0][k] = p[k] - right[k] * r - up[k] * r;
+        q[1][k] = p[k] + right[k] * r - up[k] * r;
+        q[2][k] = p[k] + right[k] * r + up[k] * r;
+        q[3][k] = p[k] - right[k] * r + up[k] * r;
+    }
+    const uint32_t c[4] = {col, col, col, col};
+    eng_agc_vr_overlay_quad(q, c);
+}
+
+/* A Sense controller: a rounded-off box along its forward axis, lit from above. */
+void ov_controller(const float pos[3], const float q[4])
+{
+    const float ax[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    float a[3][3];
+    for (int i = 0; i < 3; i++)
+        qrot(q, ax[i], a[i]);              /* the controller's right, up, back */
+    const float half[3] = {0.022f, 0.018f, 0.065f};
+    /* centred a little behind the tracked point (the ring sits at the front) */
+    float c[3];
+    for (int k = 0; k < 3; k++)
+        c[k] = pos[k] + a[2][k] * 0.04f;
+    for (int face = 0; face < 6; face++) {
+        const int axis = face / 2;
+        const float sgn = (face & 1) ? 1.0f : -1.0f;
+        const int u = (axis + 1) % 3, w = (axis + 2) % 3;
+        float p[4][3];
+        const float su[4] = {-1, 1, 1, -1}, sw[4] = {-1, -1, 1, 1};
+        for (int i = 0; i < 4; i++)
+            for (int k = 0; k < 3; k++)
+                p[i][k] = c[k] + a[axis][k] * half[axis] * sgn + a[u][k] * half[u] * su[i] +
+                          a[w][k] * half[w] * sw[i];
+        /* light: brighter when the face points up */
+        const float n = a[axis][1] * sgn;
+        const int g = (int)(70 + 70 * (n > 0 ? n : 0) + 20 * (n < 0 ? -n : 0));
+        const uint32_t col = ov_rgba(g, g + 4, g + 12, 255);
+        const uint32_t cc[4] = {col, col, col, col};
+        eng_agc_vr_overlay_quad(p, cc);
+    }
+}
+
+/* A tracked hand: its bones as soft ribbons, the finger tips as dots. */
+void ov_hand(const vr_hand_t &hd, bool pinch)
+{
+    float v[VR_HAND_JOINTS][3];
+    for (int j = 0; j < VR_HAND_JOINTS; j++)
+        app_vr_to_view(hd.joint[j], v[j]);
+    const uint32_t col = pinch ? ov_rgba(0x40, 0xa0, 0xff, 210) : ov_rgba(230, 236, 245, 150);
+    /* OpenXR: wrist 1; thumb 2-5; index 6-10; middle 11-15; ring 16-20; little 21-25 */
+    static const int kChains[5][2] = {{2, 5}, {6, 10}, {11, 15}, {16, 20}, {21, 25}};
+    for (const auto &ch : kChains) {
+        ov_ribbon(v[1], v[ch[0]], 0.012f, col, col);
+        for (int j = ch[0]; j < ch[1]; j++)
+            ov_ribbon(v[j], v[j + 1], j + 1 == ch[1] ? 0.009f : 0.012f, col, col);
+        ov_dot(v[ch[1]], 0.006f, col);
+    }
+}
+} // namespace
+
+void VrHandPointer::smooth(float ru, float rv, bool eyes)
+{
+    /* one-euro filter: heavy smoothing while still, light while moving
+     * (the eyes jump between fixations, so they get less lag) */
+    const float rate = 60.0f, dcut = 1.0f, mincut = eyes ? 1.5f : 0.9f, beta = eyes ? 10.0f : 6.0f;
+    auto alpha = [&](float cutoff) {
+        const float tau = 1.0f / (2.0f * 3.14159265f * cutoff);
+        return 1.0f / (1.0f + tau * rate);
+    };
+    if (!m_have) {
+        m_fu = ru;
+        m_fv = rv;
+        m_du = m_dv = 0.0f;
+        m_have = true;
+    } else {
+        const float ad = alpha(dcut);
+        m_du += ad * ((ru - m_fu) * rate - m_du);
+        m_dv += ad * ((rv - m_fv) * rate - m_dv);
+        const float a = alpha(mincut + beta * sqrtf(m_du * m_du + m_dv * m_dv));
+        m_fu += a * (ru - m_fu);
+        m_fv += a * (rv - m_fv);
+    }
+    u = std::max(0.0f, std::min(1.0f, m_fu));
+    v = std::max(0.0f, std::min(1.0f, m_fv));
+}
+
 void VrHandPointer::update(const VrPanelPlace *panel, float dist, float width, float aspect)
 {
-    valid = pressed = released = tapped = held_long = false;
-    if (!vr_settings().hand_tracking) {
-        pinching = gaze = false;
+    valid = gaze = laser = pressed = released = tapped = held_long = false;
+    buttons_pressed = 0;
+    eng_agc_vr_overlay_clear();
+    const int mode = vr_settings().control;
+
+    /* -- the controllers: always on when tracked; a laser at the panel ------- */
+    int ctl_hit = -1;
+    float cu[2] = {0, 0}, cv[2] = {0, 0}, beam_end[2][3], tip[2][3];
+    bool tracked[2] = {false, false}, trig_edge[2] = {false, false}, trig_up[2] = {false, false};
+    for (int side = 0; side < 2; side++) {
+        float pos[3], q[4], stick[2];
+        uint32_t btn = 0;
+        tracked[side] = app_vr_controller(side, pos, q, &btn, stick) != 0;
+        buttons_pressed |= btn & ~m_btn[side];
+        m_btn[side] = btn;
+        /* select: the trigger (L2 / R2), or cross / square */
+        const bool trig = (btn & (APP_BTN_L2 | APP_BTN_R2 | APP_BTN_CROSS | APP_BTN_SQUARE)) != 0;
+        trig_edge[side] = trig && !m_trigger[side];
+        trig_up[side] = !trig && m_trigger[side];
+        m_trigger[side] = trig;
+        if (!tracked[side])
+            continue;
+        const float back[3] = {0, 0, -1};
+        float fwd[3];
+        qrot(q, back, fwd);
+        for (int k = 0; k < 3; k++) {
+            tip[side][k] = pos[k] + fwd[k] * 0.02f;
+            beam_end[side][k] = pos[k] + fwd[k] * 1.2f;
+        }
+        ov_controller(pos, q);
+        if (panel && panel_hit(panel, dist, width, aspect, pos, fwd, &cu[side], &cv[side])) {
+            /* the beam stops on the panel */
+            const float d2r = 3.14159265f / 180.0f;
+            const float ya = panel->yaw * d2r, pa = panel->pitch * d2r;
+            const float pdir[3] = {sinf(ya) * cosf(pa), sinf(pa), -cosf(ya) * cosf(pa)};
+            const float t = (dist - dot3(pos, pdir)) / dot3(fwd, pdir);
+            for (int k = 0; k < 3; k++)
+                beam_end[side][k] = pos[k] + fwd[k] * t;
+            if (ctl_hit < 0 || side == m_laser_side)
+                ctl_hit = side;
+        }
+        if (panel) {
+            const bool on = ctl_hit == side;
+            ov_ribbon(tip[side], beam_end[side], 0.004f,
+                      on && trig ? ov_rgba(0x30, 0x90, 0xff, 230) : ov_rgba(255, 255, 255, on ? 200 : 90),
+                      ov_rgba(255, 255, 255, on ? 120 : 0));
+        }
+    }
+    if (ctl_hit >= 0) {
+        m_laser_side = ctl_hit;
+        laser = valid = true;
+        smooth(cu[ctl_hit], cv[ctl_hit], false);
+        pinching = m_trigger[ctl_hit];
+        pressed = trig_edge[ctl_hit];
+        released = trig_up[ctl_hit];
+        if (pressed) {
+            press_u = u;
+            press_v = v;
+        }
+        drag = pinching ? v - press_v : 0;
+        return;
+    }
+    if (m_laser_side >= 0 && (trig_up[0] || trig_up[1]))
+        released = true;                   /* let go after moving off the panel */
+    else if ((tracked[0] && trig_edge[0]) || (tracked[1] && trig_edge[1]))
+        tapped = true;                     /* a trigger away from any panel: like a quick pinch */
+    m_laser_side = -1;
+
+    if (mode == 0) {
+        m_have = false;
+        pinching = false;
         drag = 0;
         return;
     }
+
     float head[3], yq[4], head_yaw = 0, head_pitch = 0;
     app_vr_head_pose(head, yq);
     app_vr_head_dir(&head_yaw, &head_pitch);
     const float hy = head_yaw * 3.14159265f / 180.0f;
     const float body_right[3] = {cosf(hy), 0.0f, sinf(hy)};
 
-    /* pinches: thumb tip to index tip, with hysteresis, on either hand */
+    /* -- hands: pinches (and their picture) -------------------------------- */
     bool edge_on[2] = {false, false}, edge_off[2] = {false, false}, hand_hit[2] = {false, false};
     float hu[2] = {0, 0}, hv[2] = {0, 0}, pinch_y[2] = {0, 0};
     vr_hand_t hd[2];
     bool have[2] = {false, false};
     bool any_pinch = false;
     for (int h = 0; h < 2; h++) {
-        have[h] = vr_hands_get(h, &hd[h]) != 0;
+        have[h] = vr_settings().hands_needed() && vr_hands_get(h, &hd[h]) != 0;
         if (!have[h]) {
             if (m_pinch[h])
                 edge_off[h] = true;
@@ -141,10 +347,8 @@ void VrHandPointer::update(const VrPanelPlace *panel, float dist, float width, f
         float d[3];
         for (int k = 0; k < 3; k++)
             d[k] = hd[h].joint[VR_HAND_THUMB_TIP][k] - hd[h].joint[VR_HAND_INDEX_TIP][k];
-        /* Measured on the user's hand (handlog.csv, 2026-10-03): a pinch reads
-         * 0.6-1.3 cm between the tip joints, a relaxed hand between pinches
-         * only 2.1-3 cm - so it must let go at 2 cm, not wait for a wide open
-         * hand (that kept the next pinches from counting). */
+        /* measured: a pinch reads 0.6-1.3 cm between the tip joints, a
+         * relaxed hand between pinches 2.1-3 cm */
         const float gap = sqrtf(dot3(d, d));
         const bool was = m_pinch[h];
         m_pinch[h] = was ? gap < 0.020f : gap < 0.015f;
@@ -157,85 +361,102 @@ void VrHandPointer::update(const VrPanelPlace *panel, float dist, float width, f
             edge_off[h] = true;
         }
         any_pinch = any_pinch || m_pinch[h];
+        ov_hand(hd[h], m_pinch[h]);
     }
 
-    /* what points: the eyes, else a hand ray */
+    /* -- what points: the eyes (modes 2, 3), else a hand ray (mode 1) ------- */
     float gu = 0, gv = 0;
     float gdir[3];
-    const bool eyes = panel && app_vr_gaze_dir(gdir) &&
+    const bool eye_mode = mode >= 2;
+    const bool eyes_tracked = eye_mode && app_vr_gaze_dir(gdir);
+    const bool eyes = eyes_tracked && panel &&
                       panel_hit(panel, dist, width, aspect, (const float[3]){0, 0, 0}, gdir, &gu, &gv);
     gaze = eyes;
     int h = -1;
-    if (!eyes && panel) {
+    if (mode == 1 && panel) {
         for (int i = 0; i < 2; i++) {
             if (!have[i])
                 continue;
-            float t[3], o[3];
+            float o[3], palm[3];
             for (int k = 0; k < 3; k++)
-                t[k] = 0.5f * (hd[i].joint[VR_HAND_PALM][k] + hd[i].joint[VR_HAND_WRIST][k]) - head[k];
-            qrot(yq, t, o);
+                palm[k] = 0.5f * (hd[i].joint[VR_HAND_PALM][k] + hd[i].joint[VR_HAND_WRIST][k]);
+            app_vr_to_view(palm, o);
             const float side = dot3(o, body_right) >= 0.0f ? 1.0f : -1.0f;
             const float sh[3] = {side * 0.17f * body_right[0], -0.12f, side * 0.17f * body_right[2]};
             float ray[3] = {o[0] - sh[0], o[1] - sh[1], o[2] - sh[2]};
-            const float rl = sqrtf(dot3(ray, ray));
-            if (rl < 1e-4f)
-                continue;
-            for (int k = 0; k < 3; k++)
-                ray[k] /= rl;
+            norm3(ray);
             hand_hit[i] = panel_hit(panel, dist, width, aspect, o, ray, &hu[i], &hv[i]);
         }
         const int pref = m_active >= 0 ? m_active : 0;
         h = hand_hit[pref] ? pref : hand_hit[0] ? 0 : hand_hit[1] ? 1 : -1;
     }
     const bool pointing = eyes || h >= 0;
-    const float ru = eyes ? gu : h >= 0 ? hu[h] : 0, rv = eyes ? gv : h >= 0 ? hv[h] : 0;
-    /* with the eyes any hand's pinch counts; with a ray, the pointing hand's */
-    const bool on = eyes ? (edge_on[0] || edge_on[1]) : (h >= 0 && edge_on[h]);
-    const bool off = eyes ? ((edge_off[0] || edge_off[1]) && !any_pinch)
-                          : (m_active >= 0 && edge_off[m_active]);
     if (pointing) {
-        /* one-euro filter: heavy smoothing while still, light while moving
-         * (the eyes jump between fixations, so they get less lag) */
-        const float rate = 60.0f, dcut = 1.0f, mincut = eyes ? 1.5f : 0.9f, beta = eyes ? 10.0f : 6.0f;
-        auto alpha = [&](float cutoff) {
-            const float tau = 1.0f / (2.0f * 3.14159265f * cutoff);
-            return 1.0f / (1.0f + tau * rate);
-        };
-        if (!m_have) {
-            m_fu = ru;
-            m_fv = rv;
-            m_du = m_dv = 0.0f;
-            m_have = true;
-        } else {
-            const float ad = alpha(dcut);
-            m_du += ad * ((ru - m_fu) * rate - m_du);
-            m_dv += ad * ((rv - m_fv) * rate - m_dv);
-            const float a = alpha(mincut + beta * sqrtf(m_du * m_du + m_dv * m_dv));
-            m_fu += a * (ru - m_fu);
-            m_fv += a * (rv - m_fv);
-        }
+        smooth(eyes ? gu : hu[h], eyes ? gv : hv[h], eyes);
         valid = true;
-        u = std::max(0.0f, std::min(1.0f, m_fu));
-        v = std::max(0.0f, std::min(1.0f, m_fv));
-        if (on) {
-            /* where it pointed ~80 ms before the pinch: the pinch moves nothing */
-            const int back = std::min(m_hist_n, 5);
-            const int i = ((m_hist_n - back) % 8 + 8) % 8;
-            press_u = back ? m_hist_u[i] : u;
-            press_v = back ? m_hist_v[i] : v;
-        }
         m_hist_u[m_hist_n % 8] = u;
         m_hist_v[m_hist_n % 8] = v;
         m_hist_n++;
-    } else {
+    } else if (!(mode == 3 && m_closed_frames)) {
         m_have = false;
         m_hist_n = 0;
     }
+    auto before = [&](int frames, float *pu, float *pv) {
+        const int back = std::min(m_hist_n, frames);
+        const int i = ((m_hist_n - 1 - back) % 8 + 8) % 8;
+        *pu = m_hist_n > back ? m_hist_u[i] : u;
+        *pv = m_hist_n > back ? m_hist_v[i] : v;
+    };
+
+    if (mode == 3) {
+        /* -- eyes + blink: hold the eyes closed ~0.6 s; a short buzz says
+         * "open now", and opening selects where they rested before. A natural
+         * blink (0.1-0.4 s) never reaches the buzz. ------------------------- */
+        const bool worn = app_vr_worn() != 0;
+        if (m_buzz_frames && --m_buzz_frames == 0)
+            app_vr_vibrate(0);
+        if (!eyes_tracked && worn && (m_closed_frames || m_have)) {
+            if (m_closed_frames == 0)
+                before(6, &m_open_u, &m_open_v);   /* (the lid starts closing before the gaze is lost) */
+            m_closed_frames++;
+            if (m_closed_frames == 36 && !m_blink_armed) {
+                m_blink_armed = true;
+                app_vr_vibrate(14);
+                m_buzz_frames = 5;
+            }
+            if (m_closed_frames > 150) {             /* 2.5 s: not a blink - cancel */
+                m_blink_armed = false;
+                m_have = false;
+            }
+            valid = m_have;
+            u = m_open_u;
+            v = m_open_v;
+        } else if (eyes_tracked) {
+            if (m_blink_armed) {
+                eng_bt("vr: blink select (%d frames closed)", m_closed_frames);
+                valid = true;
+                pressed = released = true;
+                press_u = u = m_open_u;
+                press_v = v = m_open_v;
+                m_flash = 8;
+            }
+            m_blink_armed = false;
+            m_closed_frames = 0;
+        }
+        pinching = m_flash > 0 && m_flash--;
+        drag = 0;
+        return;
+    }
+
+    /* -- pinch to select (modes 1, 2) ---------------------------------------- */
+    const bool on = eyes ? (edge_on[0] || edge_on[1]) : (h >= 0 && edge_on[h]);
+    const bool off = eyes ? ((edge_off[0] || edge_off[1]) && !any_pinch)
+                          : (m_active >= 0 && edge_off[m_active]);
+    if (on && pointing)
+        before(5, &press_u, &press_v);       /* where it pointed before the pinch moved it */
     pressed = on && pointing;
     released = off;
     pinching = any_pinch;
-    /* drag: the pinching hand's height change (25 cm = a panel height), or
-     * with a hand ray, how far the ray moved */
     if (any_pinch && m_active >= 0 && have[m_active])
         drag = eyes ? (m_pinch_y0 - pinch_y[m_active]) / 0.25f : v - press_v;
     else
@@ -415,11 +636,12 @@ int VrLibrary::input(const app_input_state &in, std::string &url, std::string &t
             app_vr_set_mirror(vr_settings().tv_mirror);
             m_items[m_focus].detail = vr_settings().tv_mirror ? "On" : "Off";
         } else if (e.kind == SRC_HANDS) {
-            vr_settings().hand_tracking = !vr_settings().hand_tracking;
-            vr_prefs_set_hands(vr_settings().hand_tracking);
-            vr_hands_request(vr_settings().hand_tracking);
-            m_items[m_focus].detail = vr_settings().hand_tracking ? "On" : "Off";
-            eng_bt("ps5vr: hands & eyes %s", vr_settings().hand_tracking ? "on" : "off");
+            VrSettings &st = vr_settings();
+            st.control = (st.control + 1) % 4;
+            vr_prefs_set_control(st.control);
+            vr_hands_request(st.hands_needed());
+            m_items[m_focus].detail = vr_control_name(st.control);
+            eng_bt("ps5vr: hands & eyes: %s", vr_control_name(st.control));
         } else if (e.kind == SRC_SITE_VIDEO) {
             start(e, 1);
         } else if (e.kind != SRC_INFO) {
@@ -659,9 +881,9 @@ void VrMenu::input(const app_input_state &in)
         app_vr_set_mirror(s.tv_mirror);
         break;
     case ROW_HANDS:
-        s.hand_tracking = !s.hand_tracking;
-        vr_prefs_set_hands(s.hand_tracking);
-        vr_hands_request(s.hand_tracking);
+        s.control = (s.control + 4 + d) % 4;
+        vr_prefs_set_control(s.control);
+        vr_hands_request(s.hands_needed());
         break;
     case ROW_RECENTRE:
         if (p & APP_BTN_CROSS)
@@ -726,7 +948,7 @@ bool VrMenu::render(ui_canvas &c)
     std::string values[ROW_COUNT] = {
         kTypes[index_of(kTypeVal, s.projection)], kLayouts[index_of(kLayoutVal, s.stereo)],
         o.swap ? "On" : "Off", kScreens[scr], kSharpen[index_of(kSharpenVal, o.sharpen)],
-        s.smooth_motion ? "On" : "Off", vr_prefs_hdr() ? "On" : "Off", s.spatial_audio ? "On" : "Off", s.tv_mirror ? "On" : "Off", s.hand_tracking ? "On" : "Off",
+        s.smooth_motion ? "On" : "Off", vr_prefs_hdr() ? "On" : "Off", s.spatial_audio ? "On" : "Off", s.tv_mirror ? "On" : "Off", vr_control_name(s.control),
         "Press \xC3\x97"};
     const int row_h = 66, top = 186;
     for (int r = 0; r < ROW_COUNT; r++) {

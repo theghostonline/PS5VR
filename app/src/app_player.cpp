@@ -858,6 +858,10 @@ static void vr_input(Session &s, app_input_state &in, std::vector<OsdCommand> &c
         s_vrhand.update(nullptr, 0, 0, 0);
     eng_agc_vr_panel_cursor((menu || ctrl) && s_vrhand.valid && !s_vrhand.gaze, s_vrhand.u, s_vrhand.v,
                             s_vrhand.pinching);
+    in.pressed |= s_vrhand.buttons_pressed &
+                  (APP_BTN_CIRCLE | APP_BTN_TRIANGLE | APP_BTN_OPTIONS | APP_BTN_R3 | APP_BTN_L3);
+    if (in.pressed & APP_BTN_L3)
+        in.pressed |= APP_BTN_R3;
     if (menu) {
         s_vrmenu.point(s_vrhand, in);
     } else if (ctrl) {

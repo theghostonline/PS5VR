@@ -4383,6 +4383,67 @@ static int vr_cursor_vert(int i, int j, int gw, int gh, const float c[3][3], con
     return vr_to_ndc(c, t, w, &o->x, &o->y);
 }
 
+/* Overlay geometry for this frame (hands, controllers, laser beams): quads in
+ * the head-relative space panels are drawn in, premultiplied colour per corner. */
+#define VR_OV_MAX 400
+static struct { float p[4][3]; uint32_t c[4]; } s_ov[VR_OV_MAX];
+static int s_ov_n;
+
+void eng_agc_vr_overlay_clear(void)
+{
+    s_ov_n = 0;
+}
+
+void eng_agc_vr_overlay_quad(const float p[4][3], const uint32_t rgba[4])
+{
+    if (s_ov_n >= VR_OV_MAX)
+        return;
+    memcpy(s_ov[s_ov_n].p, p, sizeof s_ov[0].p);
+    memcpy(s_ov[s_ov_n].c, rgba, sizeof s_ov[0].c);
+    s_ov_n++;
+}
+
+/* One mesh of all overlay quads for an eye. */
+static uint32_t vr_overlay_mesh(const float c[3][3], const float *t, int eye, uint64_t *vtx_gpu,
+                                uint32_t *vtx_count, uint64_t *idx_gpu)
+{
+    if (!s_ov_n)
+        return 0;
+    eng_agc_transient_ring_t *ring = &g_agc_dev.transient_ring;
+    const uint32_t slot = g_agc_dev.current_slot;
+    const uint32_t nv = (uint32_t)s_ov_n * 4u;
+    eng_agc_transient_slice_t vs, is;
+    if (eng_agc_transient_ring_alloc(ring, slot, nv * sizeof(vr_vertex_t), 256, &vs) != ENG_AGC_TRANSIENT_OK ||
+        eng_agc_transient_ring_alloc(ring, slot, (size_t)s_ov_n * 12u, 256, &is) != ENG_AGC_TRANSIENT_OK) {
+        g_agc_dev.ring_alloc_fail++;
+        return 0;
+    }
+    vr_vertex_t *vert = (vr_vertex_t *)vs.cpu;
+    uint16_t *idx = (uint16_t *)is.cpu;
+    float ep[3];
+    vr_eye_pos(c, eye, ep);
+    uint32_t n = 0;
+    for (int q = 0; q < s_ov_n; q++) {
+        int ok = 1;
+        for (int k = 0; k < 4; k++) {
+            const float w[3] = {s_ov[q].p[k][0] - ep[0], s_ov[q].p[k][1] - ep[1], s_ov[q].p[k][2] - ep[2]};
+            vr_vertex_t *o = &vert[q * 4 + k];
+            ok &= vr_to_ndc(c, t, w, &o->x, &o->y);
+            o->rgba = s_ov[q].c[k];
+            o->u = o->v = 0.5f;
+        }
+        if (!ok)
+            continue;
+        const uint16_t b = (uint16_t)(q * 4);
+        idx[n++] = b; idx[n++] = (uint16_t)(b + 1); idx[n++] = (uint16_t)(b + 2);
+        idx[n++] = b; idx[n++] = (uint16_t)(b + 2); idx[n++] = (uint16_t)(b + 3);
+    }
+    *vtx_gpu = vs.gpu_addr;
+    *vtx_count = nv;
+    *idx_gpu = is.gpu_addr;
+    return n;
+}
+
 void eng_agc_vr_panel_cursor(int show, float u, float v, int pressed)
 {
     s_vr.cur_show = show;
@@ -4701,7 +4762,7 @@ static int vr_project(void)
             return -1;
         float c[3][3];
         vr_rows(v->q[eye], c);
-        for (int pass = 0; pass < 3; ++pass) {
+        for (int pass = 0; pass < 4; ++pass) {
             uint64_t vtx = 0, idx = 0;
             uint32_t nv = 0, ni = 0;
             uint64_t tex = 0;
@@ -4717,14 +4778,20 @@ static int vr_project(void)
                 }
             } else if (pass == 1) {
                 if (!panel)
-                    break;
+                    continue;
                 ni = vr_grid_mesh(13, 9, c, v->tan[eye], eye, vr_panel_vert, NULL, &vtx, &nv, &idx);
                 tex = tex_p.gpu_addr;
                 blend = ENG_AGC_BLEND_PREMULTIPLIED;
-            } else {
+            } else if (pass == 2) {
                 if (!panel || !s_vr.cur_show)
-                    break;
+                    continue;
                 ni = vr_grid_mesh(9, 9, c, v->tan[eye], eye, vr_cursor_vert, NULL, &vtx, &nv, &idx);
+                tex = tex_w.gpu_addr;
+                blend = ENG_AGC_BLEND_PREMULTIPLIED;
+            } else {
+                if (!s_ov_n)
+                    break;
+                ni = vr_overlay_mesh(c, v->tan[eye], eye, &vtx, &nv, &idx);
                 tex = tex_w.gpu_addr;
                 blend = ENG_AGC_BLEND_PREMULTIPLIED;
             }

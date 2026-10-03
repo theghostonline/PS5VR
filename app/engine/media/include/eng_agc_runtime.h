@@ -384,6 +384,10 @@ int  eng_agc_vr_targets(uint32_t eye_w, uint32_t eye_h, int count, uint32_t tsha
  * the video's front), `dist` metres away, `width` metres wide. show = 0 hides. */
 void eng_agc_vr_panel(const uint32_t *px, int w, int h, int upload, int show, float yaw,
                       float pitch, float dist, float width, float opacity);
+/* Overlay quads for the next headset frame: corners in the head-relative space
+ * panels are drawn in (metres), premultiplied RGBA per corner. */
+void eng_agc_vr_overlay_clear(void);
+void eng_agc_vr_overlay_quad(const float p[4][3], const uint32_t rgba[4]);
 /* The hand pointer's dot on the shown panel at (u, v) in 0..1, blue when pressed. */
 void eng_agc_vr_panel_cursor(int show, float u, float v, int pressed);
 /* The view for the frame being built; NULL leaves VR (TV flips resume). */
