@@ -13,6 +13,7 @@ components, each under its own license.
 | edge264 (H.264 / MVC decoder) | `app/third_party/edge264/` | BSD-3-Clause |
 | NanoSVG | `app/third_party/nanosvg/` | zlib |
 | cJSON | `app/engine/addons/src/cJSON.c` | MIT |
+| QR Code generator library, Copyright (c) Project Nayuki | `app/src/qrcodegen.c`, `qrcodegen.h` | MIT |
 | FSR 1 (EASU, RCAS), GLSL port | `app/engine/shaders/agc/` | MIT (AMD) |
 | Anime4K CNN weights | `app/engine/shaders/agc/` | MIT (bloc97) |
 | Inter typeface | `app/assets/fonts/` | SIL Open Font License 1.1 |

@@ -18,6 +18,7 @@
 #include "vr_ui.h"
 #include "vr_system.h"
 #include "donate_qr.h"
+#include "qrcodegen.h"
 
 #include <string>
 #include <ctime>
@@ -272,6 +273,30 @@ void draw_home(const char *line)
                     ui_fill_rect(&c, x0 + (q + x) * m, y0 + (q + y) * m, m, m, UI_RGBA(10, 14, 28, 255));
         ui_text_draw_aligned(&c, UI_MEDIUM, 24.0f, x0 + side / 2.0f, y0 + side + 36, 1,
                              UI_RGBA(120, 132, 155, 255), "Support PS5VR", 0);
+    }
+    /* Send a link from a phone: a QR code of the settings page (bottom left),
+     * where a video link can be pasted and played. */
+    {
+        const std::string url = "http://" + vr_console_ip() + ":" +
+                                std::to_string(vr_settings_server_port()) + "/";
+        static uint8_t qr[qrcodegen_BUFFER_LEN_MAX], tmp[qrcodegen_BUFFER_LEN_MAX];
+        if (qrcodegen_encodeText(url.c_str(), tmp, qr, qrcodegen_Ecc_MEDIUM, qrcodegen_VERSION_MIN,
+                                 qrcodegen_VERSION_MAX, qrcodegen_Mask_AUTO, true)) {
+            const int n = qrcodegen_getSize(qr), m = 6, q = 2;
+            const int side = (n + 2 * q) * m;
+            const int x0 = 72, y0 = 1080 - 112 - side;
+            ui_fill_rrect(&c, x0, y0, side, side, 8, UI_RGBA(235, 240, 248, 255));
+            for (int y = 0; y < n; y++)
+                for (int x = 0; x < n; x++)
+                    if (qrcodegen_getModule(qr, x, y))
+                        ui_fill_rect(&c, x0 + (q + x) * m, y0 + (q + y) * m, m, m, UI_RGBA(10, 14, 28, 255));
+            ui_text_draw(&c, UI_SEMIBOLD, 30.0f, x0 + side + 32, y0 + 54, UI_WHITE,
+                         "Play a link from your phone", 0);
+            ui_text_draw(&c, UI_REGULAR, 26.0f, x0 + side + 32, y0 + 98, UI_RGBA(150, 165, 190, 255),
+                         "Scan, paste a video link, press Play", 0);
+            ui_text_draw(&c, UI_MEDIUM, 26.0f, x0 + side + 32, y0 + 140, UI_RGBA(120, 200, 255, 255),
+                         url.c_str(), 0);
+        }
     }
     eng_agc_runtime_frame_begin();
     eng_agc_runtime_clear_black();

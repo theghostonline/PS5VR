@@ -56,4 +56,6 @@ void vr_settings_server_start(void);
 int  vr_settings_server_port(void);
 /* A play request posted to http://<console>:<port>/play ({"url","title","vr"}). */
 bool vr_settings_take_play(std::string &json);
+/* A play request is waiting (the player then gives way to it). */
+bool vr_settings_play_pending(void);
 std::string vr_console_ip(void);

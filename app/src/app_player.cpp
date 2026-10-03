@@ -21,6 +21,7 @@
 #include "app_subs.h"
 #include "app_vr.h"
 #include "vr_ui.h"
+#include "vr_sources.h"
 #include "ui_canvas.h"
 #include "ui_image.h"
 #include "ui_text.h"
@@ -1227,6 +1228,15 @@ extern "C" void app_player_run(const char *json)
 #ifdef APP_VR
         vr_input(s, in, cmds);
         vr_autopause(s, cmds);
+        /* a link sent from a phone takes over from what plays (or an error) */
+        static double s_link_check;
+        if (now - s_link_check > 0.5) {
+            s_link_check = now;
+            if (vr_settings_play_pending()) {
+                eng_bt("ps5vr: a new link was sent - stopping this video for it");
+                cmds.push_back({OsdCmd::Stop});
+            }
+        }
 #endif
         s_osd.input(in, s.st, cmds);
         s_osd.tick(s.st, cmds);

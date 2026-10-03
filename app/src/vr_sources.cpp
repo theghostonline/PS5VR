@@ -932,6 +932,33 @@ void serve(int fd)
         }
         reply = ok ? "HTTP/1.0 202 Accepted\r\nContent-Length: 0\r\n\r\n"
                    : "HTTP/1.0 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+    } else if (!req.compare(0, 10, "POST /link")) {
+        /* the settings page's "Play a link": form field url (and an optional vr) */
+        const std::string body = head_end != std::string::npos ? req.substr(head_end + 4) : "";
+        std::string url = form_field(body, "url");
+        url.erase(0, url.find_first_not_of(" \t\r\n"));
+        while (!url.empty() && isspace((unsigned char)url.back()))
+            url.pop_back();
+        const bool ok = !url.compare(0, 7, "http://") || !url.compare(0, 8, "https://");
+        if (ok) {
+            std::string name = url.substr(0, url.find('?'));
+            name = name.substr(name.rfind('/') + 1);
+            cJSON *j = cJSON_CreateObject();
+            cJSON_AddStringToObject(j, "url", url.c_str());
+            cJSON_AddStringToObject(j, "title", name.empty() ? "Video" : name.c_str());
+            const std::string vr = form_field(body, "vr");
+            if (!vr.empty())
+                cJSON_AddStringToObject(j, "vr", vr.c_str());
+            char *txt = cJSON_PrintUnformatted(j);
+            pthread_mutex_lock(&s_play_lock);
+            s_play_pending = txt ? txt : "";
+            pthread_mutex_unlock(&s_play_lock);
+            free(txt);
+            cJSON_Delete(j);
+            eng_bt("ps5vr: link sent from the settings page");
+        }
+        reply = std::string("HTTP/1.0 303 See Other\r\nLocation: /?") + (ok ? "sent=1" : "badlink=1") +
+                "\r\nContent-Length: 0\r\n\r\n";
     } else if (!req.compare(0, 10, "POST /save")) {
         const std::string body = head_end != std::string::npos ? req.substr(head_end + 4) : "";
         cJSON *j = cJSON_CreateObject();
@@ -961,8 +988,27 @@ void serve(int fd)
             "small{color:#93a3c0}button{margin-top:1.5em;background:#0070d1;color:#fff;border:0;border-radius:.4em;"
             "padding:.8em 1.6em;font:inherit;font-weight:700}.ok{background:#12391f;padding:.6em;border-radius:.4em}"
             "</style></head><body><h1><span class=vr>VR</span>PS5VR settings</h1>";
+        auto flag = [&](const char *k) {
+            const size_t a = req.find(k), e = req.find("\r\n");
+            return a != std::string::npos && a < e;
+        };
         if (saved)
             page += "<p class=ok>Saved. In PS5VR, press &#9651; in the library to refresh.</p>";
+        if (flag("sent=1"))
+            page += "<p class=ok>Sent. It starts in the headset in a moment (PS5VR has to be on its library).</p>";
+        if (flag("badlink=1"))
+            page += "<p class=ok style='background:#3a1d1d'>That doesn't look like a video link "
+                    "(it has to start with http:// or https://).</p>";
+        page += "<form method=post action=/link><label>Play a link</label>"
+                "<input name=url type=url inputmode=url autocomplete=off placeholder='https://example.com/video.mp4'>"
+                "<select name=vr style='margin-top:.6em;width:100%;background:#141a2c;color:#fff;border:1px solid #2a3554;"
+                "border-radius:.4em;padding:.6em;font:inherit'>"
+                "<option value=''>Video type: detect from the name</option>"
+                "<option value='180_sbs'>180&deg; 3D side by side</option><option value='360_tb'>360&deg; 3D top-bottom</option>"
+                "<option value='360'>360&deg; 2D</option><option value='180'>180&deg; 2D</option>"
+                "<option value='flat_sbs'>Flat 3D side by side</option><option value='flat'>Flat 2D</option></select>"
+                "<button>Play</button><small style='display:block;margin-top:.6em'>Direct links to a video file "
+                "(.mp4, .mkv...). Plays in the headset straight away.</small></form>";
         page += "<form method=post action=/save>"
                 "<label>DeoVR / HereSphere libraries</label><textarea name=sites rows=4 placeholder='My Stash | http://192.168.0.10:9999/deovr'>" +
                 html_escape(lines_of(c.sites)) +
@@ -1022,6 +1068,14 @@ void vr_settings_server_start(void)
 int vr_settings_server_port(void)
 {
     return kSettingsPort;
+}
+
+bool vr_settings_play_pending(void)
+{
+    pthread_mutex_lock(&s_play_lock);
+    const bool p = !s_play_pending.empty();
+    pthread_mutex_unlock(&s_play_lock);
+    return p;
 }
 
 bool vr_settings_take_play(std::string &json)

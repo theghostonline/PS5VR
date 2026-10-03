@@ -55,6 +55,9 @@ PS VR2 compositor, at 120 Hz.
 - Recentre (R3), auto-pause when the headset comes off, TV mirroring
 - PS VR2 Sense controllers: tracked controllers in the headset with a laser
   pointer for the panels (trigger to select, drag to scroll, circle for back)
+- Play a link from your phone: scan the QR code on the TV home screen, paste
+  any direct video link (.mp4, .mkv...) and press Play - it starts in the
+  headset straight away, no typing on the console
 - Hands & eyes (experimental), four modes:
   - Hands: point with your hand, pinch to select, with your hands drawn in VR
   - Eyes + pinch: look at an item and pinch with either hand
